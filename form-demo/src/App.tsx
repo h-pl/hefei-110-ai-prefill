@@ -12,8 +12,12 @@ import { textChange, previewChange } from './text-change'
 import { matchAddresses } from './address'
 import { usePageTextMotion } from './text-motion'
 import { playbackSteps, getFollowups } from './followups'
+import { emptyWorkflow, getRoot, getActive, isBusy, makeRequest, restoreWorkflow, workflowReducer, type Outcome } from './workflow'
+import { WorkflowPanel, SnapshotFields } from './WorkflowPanel'
+import { mockWorkflowResult } from './mock-workflow-service'
 
 const STORAGE_KEY = 'moss-prefill-form:v3'
+const WORKFLOW_KEY = 'moss-prefill-workflow:v1'
 const formatCallTime = (milliseconds: number) => { const seconds = Math.floor(milliseconds / 1000); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` }
 
 function Status({ field }: { field: Field }) {
@@ -234,6 +238,44 @@ function FollowupCard({ questions, started, playing }: { questions: ReturnType<t
 export default function App() {
   usePageTextMotion()
   const [state, dispatch] = useReducer(reducer, undefined, () => { try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? restoreModel(saved) : createIdleModel() } catch { return createIdleModel() } })
+  const [workflow, flowDispatch] = useReducer(workflowReducer, undefined, () => { try { return restoreWorkflow(localStorage.getItem(WORKFLOW_KEY)) } catch { return emptyWorkflow() } })
+  const [flowStorageError, setFlowStorageError] = useState(false)
+  const [nextOutcome, setNextOutcome] = useState<Outcome>('received')
+  const [queryOutcome, setQueryOutcome] = useState<Outcome>('received')
+  const [workflowDialog, setWorkflowDialog] = useState<'supplement' | 'record' | null>(null)
+  const outcomeRef = useRef({ nextOutcome, queryOutcome })
+  outcomeRef.current = { nextOutcome, queryOutcome }
+  const rootRequest = getRoot(workflow)
+  const activeRequest = getActive(workflow)
+  const snapshot = rootRequest && workflow.screen !== 'edit' ? rootRequest : null
+  const flowBusy = isBusy(activeRequest)
+  const flowComplete = activeRequest?.kind === 'record' && activeRequest.status === 'received'
+  const latestSupplement = workflow.requests.filter(r => r.kind === 'supplement' && r.parentId === rootRequest?.id && r.status === 'received').at(-1)
+  const supplementBaseline = latestSupplement?.fields ?? rootRequest?.fields
+  const supplementChanges = supplementBaseline ? state.fields.filter(f => f.value !== supplementBaseline.find(old => old.id === f.id)?.value) : []
+  const supplementText = supplementChanges.map(f => `${f.label}：${supplementBaseline?.find(old => old.id === f.id)?.value || '尚未获取'} → ${f.value || '尚未获取'}`).join('\n')
+  const supplementNeedsConfirmation = supplementChanges.some(f => isStrong(f.id) && f.review === 'pending')
+  const canSupplement = rootRequest?.status === 'received' && activeRequest?.status === 'received' && !flowComplete && workflow.screen === 'edit'
+  useEffect(() => { if (rootRequest?.status === 'received') flowDispatch({ type: 'draft', value: supplementText }) }, [rootRequest?.id, supplementText])
+  useEffect(() => { try { localStorage.setItem(WORKFLOW_KEY, JSON.stringify(workflow)); setFlowStorageError(false) } catch { setFlowStorageError(true) } }, [workflow])
+  useEffect(() => {
+    if (!activeRequest || !isBusy(activeRequest)) return
+    const planned = activeRequest.status === 'querying' ? outcomeRef.current.queryOutcome : outcomeRef.current.nextOutcome
+    const timer = window.setTimeout(() => {
+      const outcome = mockWorkflowResult(activeRequest, planned)
+      flowDispatch({ type: 'result', id: activeRequest.id, attempt: activeRequest.attempt, outcome, time: new Date().toLocaleTimeString('zh-CN', { hour12: false }) })
+    }, 900)
+    return () => window.clearTimeout(timer)
+  }, [activeRequest])
+  const beginHandoff = (urgent = false) => {
+    const confirmed = reducer(state, { type: 'send', urgent })
+    const request = makeRequest(confirmed, 'handoff', workflow.requests.filter(r => r.kind === 'handoff').length + 1, null, '', urgent)
+    dispatch({ type: 'send', urgent })
+    flowDispatch({ type: 'start', request })
+    setHandoff(null)
+  }
+  const beginSupplement = () => flowDispatch({ type: 'start', request: makeRequest(state, 'supplement', workflow.requests.filter(r => r.kind === 'supplement').length + 1, rootRequest!.id, supplementText, rootRequest!.urgent) })
+  const beginRecord = () => flowDispatch({ type: 'start', request: makeRequest(state, 'record', workflow.requests.filter(r => r.kind === 'record').length + 1, rootRequest!.id, '保存本轮警情、来源、核对与操作记录', rootRequest!.urgent) })
   const [focused, setFocused] = useState<FieldId | null>(null)
   const [playing, setPlaying] = useState(false)
   const focusedRef = useRef(focused)
@@ -246,8 +288,8 @@ export default function App() {
   const [handoff, setHandoff] = useState<'normal' | 'urgent' | null>(null)
   const persist = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 3, state })); setStorageError(false); return true } catch { setStorageError(true); return false } }
   useEffect(() => { persist() }, [state])
-  const field = (id: FieldId) => state.fields.find(f => f.id === id)!
-  const reviewed = state.fields.filter(f => isStrong(f.id) && f.review !== 'pending' && f.draft === null).length
+  const field = (id: FieldId) => (snapshot?.fields ?? state.fields).find(f => f.id === id)!
+  const reviewed = (snapshot?.fields ?? state.fields).filter(f => isStrong(f.id) && f.review !== 'pending' && f.draft === null).length
   const started = state.playbackCursor !== null
   const conversation = state.conversation
   const transcriptionDone = started && state.playbackCursor! >= playbackSteps.length && state.streams.length === 0
@@ -266,7 +308,7 @@ export default function App() {
   const pendingUpdates = state.fields.filter(f => f.proposal).length
   const blocker = sendBlocker(state)
   const issues = submitAttempted ? submissionIssues(state) : {}
-  const currentSent = state.sent && state.fields.every(f => f.draft === null && !f.proposal && f.review !== 'pending' && state.sent!.values[f.id] === f.value)
+  const currentSent = snapshot ? !snapshot.urgent : state.sent && state.fields.every(f => f.draft === null && !f.proposal && f.review !== 'pending' && state.sent!.values[f.id] === f.value)
   const submitDirectly = () => {
     setNotice('')
     const validation = submissionIssues(state)
@@ -280,7 +322,7 @@ export default function App() {
       return
     }
     setSubmitAttempted(false)
-    dispatch({ type: 'send' })
+    beginHandoff()
   }
   useEffect(() => {
     if (!playing || !operatorStream) return
@@ -318,43 +360,51 @@ export default function App() {
     if (state.playbackCursor !== null && transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
   }, [state.playbackCursor, operatorStream?.offset, callerStream?.offset])
   const togglePlayback = () => {
+    if (rootRequest && playbackDone && !flowComplete) {
+      const quote = '旁边还有一个人脚踝受伤，走不了路。'
+      dispatch({ type: 'stream-start', evidence: { speaker: '报警人', time: formatCallTime(state.elapsedMs), quote }, updates: { injury: '一人手臂流血，意识清醒；另有一人脚踝受伤，无法行走' } })
+      setPlaying(true)
+      return
+    }
     if (playing) { setPlaying(false); return }
     if (state.playbackCursor === null || playbackDone) {
-      dispatch({ type: 'playback-start' }); setResetVersion(v => v + 1); setSubmitAttempted(false); setNotice(''); setFocused(null); setHandoff(null)
+      dispatch({ type: 'playback-start' }); flowDispatch({ type: 'reset' }); setResetVersion(v => v + 1); setSubmitAttempted(false); setNotice(''); setFocused(null); setHandoff(null)
     }
     setPlaying(true)
   }
   return <div className="workbench">
-    <header className="workbench-nav"><div className="brand">110 / <span>接警助手</span></div><div className="header-call-info" data-motion-static><strong className="header-call-status" tabIndex={0} title="接警时间 14:32:08" aria-label={`${state.playbackCursor === null ? '等待接听' : '正在通话'}，通话时长${callTime}，接警时间14点32分08秒`}><span className="call-status-dot"/><span>{state.playbackCursor === null ? '等待接听' : '正在通话'}</span> <span>{callTime}</span></strong><span className="header-case-id">JQ-20260916-0028</span><span className="header-caller">来电 <b>138****6721</b></span></div><div className="header-tools"><span className="demo-badge">交互演示</span><Button variant="ghost" size="sm" className="reset-demo" aria-label="重置演示数据" title="重置演示数据" onClick={() => { setPlaying(false); dispatch({ type: 'playback-idle' }); setResetVersion(v => v + 1); setSubmitAttempted(false); setNotice(''); setFocused(null); setHandoff(null) }}><RotateCcw size={14}/><span className="reset-label">重置演示数据</span></Button><span className="nav-operator" data-motion-static>接警员 012<span className="operator-separator">·</span><span className="operator-online">在线</span></span><div className="header-actions" role="group" aria-label="警单操作"><Button variant="outline" className="urgent-action" onClick={() => { setNotice(''); setHandoff('urgent') }}>紧急先行移交</Button><Button className="handoff-action" disabled={!!currentSent} onClick={submitDirectly}><span>{currentSent ? '已提交' : '移交调度'}</span></Button></div></div></header>
+    <header className="workbench-nav"><div className="brand">110 / <span>接警助手</span></div><div className="header-call-info" data-motion-static><strong className="header-call-status" tabIndex={0} title="接警时间 14:32:08" aria-label={`${state.playbackCursor === null ? '等待接听' : '正在通话'}，通话时长${callTime}，接警时间14点32分08秒`}><span className="call-status-dot"/><span>{state.playbackCursor === null ? '等待接听' : '正在通话'}</span> <span>{callTime}</span></strong><span className="header-case-id">JQ-20260916-0028</span><span className="header-caller">来电 <b>138****6721</b></span></div><div className="header-tools"><Popover><PopoverTrigger asChild><Button variant="ghost" className="demo-badge" aria-label="交互演示设置">交互演示</Button></PopoverTrigger><PopoverContent className="simulation-settings" data-motion-static><strong>模拟服务回执</strong><p>仅在当前浏览器模拟，未连接调度系统。</p><label>下次提交结果<select aria-label="下次提交结果" value={nextOutcome} onChange={e => setNextOutcome(e.target.value as Outcome)}><option value="received">成功接收</option><option value="failed">明确失败</option><option value="unknown">结果未知</option></select></label><label>下次查询结果<select aria-label="下次查询结果" value={queryOutcome} onChange={e => setQueryOutcome(e.target.value as Outcome)}><option value="received">已成功接收</option><option value="failed">明确未接收</option><option value="unknown">仍然未知</option></select></label></PopoverContent></Popover><Button variant="ghost" size="sm" className="reset-demo" aria-label="重置演示数据" title="重置演示数据" onClick={() => { setPlaying(false); dispatch({ type: 'playback-idle' }); flowDispatch({ type: 'reset' }); setResetVersion(v => v + 1); setSubmitAttempted(false); setNotice(''); setFocused(null); setHandoff(null) }}><RotateCcw size={14}/><span className="reset-label">重置演示数据</span></Button><span className="nav-operator" data-motion-static>接警员 012<span className="operator-separator">·</span><span className="operator-online">在线</span></span><div className="header-actions" data-motion-static role="group" aria-label="警单操作"><Button variant="outline" className="urgent-action" disabled={!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit')} onClick={() => { setNotice(''); setHandoff('urgent') }}>紧急先行移交</Button>{canSupplement ? (supplementChanges.length > 0 && <Button className="handoff-action" title={supplementNeedsConfirmation ? '变更后的地点或回拨号码需先确认' : undefined} disabled={supplementNeedsConfirmation || pendingUpdates > 0 || state.fields.some(f => f.draft !== null || f.error)} onClick={() => { flowDispatch({ type: 'draft', value: supplementText }); setWorkflowDialog('supplement') }}>发送补充（{supplementChanges.length}项）</Button>) : <Button className="handoff-action" disabled={flowBusy || flowComplete || (!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit'))} onClick={submitDirectly}><span>{flowComplete ? '已完成整理' : flowBusy ? '处理中' : rootRequest && workflow.screen !== 'edit' ? '已提交' : '移交调度'}</span></Button>}</div></div></header>
     <main className="workspace-grid">
-      <aside className="transcript-column" aria-label="实时转写"><div className="transcript-heading"><h2>实时转写</h2><Button variant="ghost" size="icon" className="playback-button" onClick={togglePlayback} aria-label={playing ? '暂停模拟对话' : playbackDone ? '重新播放模拟对话' : state.playbackCursor !== null ? '继续模拟对话' : '播放模拟对话'} title={playing ? '暂停' : playbackDone ? '重新播放' : state.playbackCursor !== null ? '继续播放' : '从头播放模拟对话'}>{playing ? <Pause size={16}/> : playbackDone ? <RotateCcw size={16}/> : <Play size={16}/>}</Button></div>{state.playbackCursor !== null && <p className="recording"><span className="recording-dot"/><span className="recording-copy">录音中 · 转写持续更新</span></p>}<div className="transcript-messages" ref={transcriptRef} tabIndex={0} role="region" aria-label="对话记录">{transcriptRows.length === 0 && <p className="transcript-empty">{state.playbackCursor === null ? '点击播放，开始模拟对话' : '正在接通…'}</p>}{transcriptRows.map(({ evidence: { speaker, time, quote }, offset }) => <article key={`${speaker}-${time}`} className={`message ${offset !== null ? 'streaming-message' : ''} ${speaker === '报警人' ? 'caller' : 'operator-message'}`} aria-label={offset !== null ? `${speaker}正在转写` : undefined}><header><span className="speaker-label">{speaker}</span><span>·</span><time>{time}</time>{offset !== null && <span className="speaking-indicator">{playing ? '正在说话' : '已暂停'}</span>}</header><p><StreamedText quote={quote} offset={offset}/>{offset !== null && <span className={`transcript-caret ${playing ? '' : 'paused'}`} aria-hidden="true"/>}</p></article>)}</div>
+      <aside className="transcript-column" aria-label="实时转写"><div className="transcript-heading"><h2>实时转写</h2><Button variant="ghost" size="icon" className="playback-button" disabled={!!rootRequest && playbackDone && (flowComplete || conversation.some(e => e.quote === '旁边还有一个人脚踝受伤，走不了路。'))} onClick={togglePlayback} aria-label={playing ? '暂停模拟对话' : playbackDone ? rootRequest ? '模拟补充对话' : '重新播放模拟对话' : state.playbackCursor !== null ? '继续模拟对话' : '播放模拟对话'} title={playing ? '暂停' : playbackDone ? rootRequest ? '模拟补充对话' : '重新播放' : state.playbackCursor !== null ? '继续播放' : '从头播放模拟对话'}>{playing ? <Pause size={16}/> : playbackDone ? <RotateCcw size={16}/> : <Play size={16}/>}</Button></div>{state.playbackCursor !== null && <p className="recording"><span className="recording-dot"/><span className="recording-copy">录音中 · 转写持续更新</span></p>}<div className="transcript-messages" ref={transcriptRef} tabIndex={0} role="region" aria-label="对话记录">{transcriptRows.length === 0 && <p className="transcript-empty">{state.playbackCursor === null ? '点击播放，开始模拟对话' : '正在接通…'}</p>}{transcriptRows.map(({ evidence: { speaker, time, quote }, offset }) => <article key={`${speaker}-${time}`} className={`message ${offset !== null ? 'streaming-message' : ''} ${speaker === '报警人' ? 'caller' : 'operator-message'}`} aria-label={offset !== null ? `${speaker}正在转写` : undefined}><header><span className="speaker-label">{speaker}</span><span>·</span><time>{time}</time>{offset !== null && <span className="speaking-indicator">{playing ? '正在说话' : '已暂停'}</span>}</header><p><StreamedText quote={quote} offset={offset}/>{offset !== null && <span className={`transcript-caret ${playing ? '' : 'paused'}`} aria-hidden="true"/>}</p></article>)}</div>
 
       </aside>
-      <section className="form-column" aria-labelledby="form-title"><div className="form-title-row"><div><div className="form-heading-main"><h1 id="form-title">预填警单</h1>{(notice || storageError) && <span role="status" className={`form-save-feedback ${storageError ? 'storage-error' : ''}`}>{storageError ? '暂存失败，请保持页面打开' : notice}</span>}</div><p>人工处理后，AI 不会覆盖。{pendingUpdates > 0 && <span className="pending-update-note">{pendingUpdates} 项新信息待处理</span>}</p></div><div className="key-progress"><UserRoundCheck size={15}/><span>关键核对 <b>{reviewed}</b> / 2</span></div></div>
+      <section className="form-column" aria-labelledby="form-title"><div className="form-title-row"><div><div className="form-heading-main"><h1 id="form-title">预填警单</h1>{currentSent && <span className="form-confirmed-status" role="status" data-motion-static title={`本次警单已整体确认 · ${snapshot?.time ?? state.sent?.time ?? ''} · 未发送至调度系统`} aria-label={`本次警单已整体确认，${snapshot?.time ?? state.sent?.time ?? ''}，未发送至调度系统`}><UserRoundCheck size={15} aria-hidden="true"/>已确认</span>}{(notice || storageError || flowStorageError) && <span role="status" className={`form-save-feedback ${storageError || flowStorageError ? 'storage-error' : ''}`}>{storageError || flowStorageError ? '暂存失败，请保持页面打开' : notice}</span>}</div><p>{snapshot ? '本次移交内容保留；新增信息作为关联补充。' : '人工处理后，AI 不会覆盖。'}{pendingUpdates > 0 && <span className="pending-update-note">{pendingUpdates} 项新信息待处理</span>}</p></div><div className="key-progress"><UserRoundCheck size={15}/><span>关键核对 <b>{reviewed}</b> / 2</span></div></div>
         <div className="risk-banner" data-motion-static tabIndex={0} role="region" aria-label="当前风险提示"><UpdatingText text={field('ongoing').value === '是' ? '现场冲突仍在发生' : field('ongoing').value === '否' ? '当前记录：事件已停止' : field('reason').value ? '事件是否持续待核实' : started ? '正在分析对话信息' : '等待识别'} idle={!field('reason').value && !field('ongoing').value} paused={!playing} thinking={(!field('reason').value && !field('ongoing').value && started) || (playing && state.fillOffset < 0 && state.pendingFills[0]?.id === 'ongoing')}/>{field('injury').value && <span className="risk-divider">·</span>}<UpdatingText text={field('injury').value} thinking={playing && state.fillOffset < 0 && state.pendingFills[0]?.id === 'injury'}/></div>
-        <form onSubmit={e => e.preventDefault()} className="prefill-form" aria-label="预填警单">
+        {snapshot ? <SnapshotFields request={snapshot} renderEvidence={f => <Evidence field={f}/>}/> : <form onSubmit={e => e.preventDefault()} className="prefill-form" aria-label="预填警单">
           <div className="field-group-heading"><span>基础信息</span><span>地点、号码需单独确认</span></div>
           {state.fields.slice(0, 3).map(f => <FormField key={`${resetVersion}-${f.id}`} field={f} streamText={state.pendingFills[0]?.id === f.id && state.fillOffset >= 0 && f.origin === 'ai' && !f.owned && f.review === 'pending' && focused !== f.id ? previewChange(f.value, state.pendingFills[0].value, state.fillOffset) : undefined} thinking={playing && !f.value && f.draft === null && focused !== f.id} submitIssue={issues[f.id]} dispatch={action => { setNotice(''); dispatch(action) }} setFocused={setFocused}/>)}
           <div className="field-group-heading core-group"><span>核心预填</span><span>随发送整体确认</span></div>
           {state.fields.slice(3).map(f => <FormField key={`${resetVersion}-${f.id}`} field={f} streamText={state.pendingFills[0]?.id === f.id && state.fillOffset >= 0 && f.origin === 'ai' && !f.owned && f.review === 'pending' && focused !== f.id ? previewChange(f.value, state.pendingFills[0].value, state.fillOffset) : undefined} thinking={playing && !f.value && f.draft === null && focused !== f.id} submitIssue={issues[f.id]} dispatch={action => { setNotice(''); dispatch(action) }} setFocused={setFocused}/>)}
-        </form>
-        {currentSent && <div className="sent-result"><UserRoundCheck size={18}/><div><strong>本次警单已整体确认</strong><p>演示完成 · {state.sent!.time} · 未发送至调度系统</p></div></div>}
+        </form>}
       </section>
-      <aside className="assistance-column" aria-label="接警辅助"><h2>接警辅助</h2><FollowupCard questions={followups} started={started} playing={playing}/>
+      {rootRequest ? <WorkflowPanel workflow={workflow} dispatch={flowDispatch} fields={state.fields} pending={pendingUpdates} storageError={storageError || flowStorageError} startSupplement={beginSupplement} startRecord={beginRecord} dialog={workflowDialog} setDialog={setWorkflowDialog}/> : <aside className="assistance-column" aria-label="接警辅助"><h2>接警辅助</h2><FollowupCard questions={followups} started={started} playing={playing}/>
         <section className="assist-card classification-card">
           <div className="assist-card-heading"><h3>警情分类</h3>{field('reason').value && hasFieldEvidence(field('reason')) && <Popover><PopoverTrigger asChild><Button variant="ghost" size="sm" className="evidence-trigger" title="查看分类依据" aria-label="警情分类的依据"><EvidenceIcon/></Button></PopoverTrigger><PopoverContent className="evidence-panel" data-motion-static><strong>警情分类的依据</strong>{field('reason').value ? <><div className="evidence-meta"><EvidenceIcon/>{field('reason').evidence.speaker}<span>{field('reason').evidence.time}</span></div><blockquote>{field('reason').evidence.quote}</blockquote><p>仅依据原话展示分类建议，正式分类字典未接入。</p></> : <p>暂无分类依据。</p>}</PopoverContent></Popover>}</div>
           <CardDetails items={[{ id: 'classification', text: field('reason').value ? '打架相关警情 · 待确认' : '', analysis: field('reason').value ? undefined : { started, playing } }]}/>
         </section>
         <section className="assist-card" data-motion-static><h3>处置预案</h3><p className="muted">待接入</p></section>
         <section className="assist-card" data-motion-static><h3>警力辅助</h3><p className="muted">待接入</p></section>
-      </aside>
+      </aside>}
     </main>
 
     <span className="sr-only" role="status">{state.announcement}</span>
-    <AlertDialog open={handoff !== null} onOpenChange={open => !open && setHandoff(null)}><AlertDialogContent className="handoff-dialog"><AlertDialogHeader><AlertDialogTitle>{handoff === 'urgent' ? '紧急先行移交' : '确认并移交调度'}</AlertDialogTitle><AlertDialogDescription>地点和号码单独确认；发送时整体确认其余 7 项。当前为交互演示，不会实际发送。</AlertDialogDescription></AlertDialogHeader>
-      <div className="handoff-summary">{state.fields.map(f => <div key={f.id}><span>{f.label}</span><p>{f.draft ?? f.value}</p>{isStrong(f.id) && <span className={f.review === 'pending' || f.draft !== null ? 'summary-pending' : 'summary-confirmed'}>{f.review === 'pending' || f.draft !== null ? '待单独确认' : '已确认'}</span>}</div>)}</div>
-      {blocker && <p className="handoff-blocker" role="alert"><CircleAlert size={15}/>{blocker}</p>}
-      <AlertDialogFooter><AlertDialogCancel>返回核对</AlertDialogCancel><Button disabled={!!blocker || !!currentSent} onClick={() => { dispatch({ type: 'send', urgent: handoff === 'urgent' }); setHandoff(null) }}>{currentSent ? '已完成整体确认' : '确认并发送'}</Button></AlertDialogFooter>
+    <AlertDialog open={handoff !== null} onOpenChange={open => !open && setHandoff(null)}><AlertDialogContent className="handoff-dialog"><AlertDialogHeader><AlertDialogTitle>{handoff === 'urgent' ? '紧急先行移交' : '确认并移交调度'}</AlertDialogTitle><AlertDialogDescription>紧急情况下可先移交已保存的内容；未确认地点、号码及其他未核实事项随单保留。当前使用模拟调度服务。</AlertDialogDescription></AlertDialogHeader>
+      <div className="handoff-summary">{state.fields.map(f => {
+        const value = f.draft ?? f.value
+        return <div key={f.id}><span>{f.label}</span><p><StreamedText quote={value} offset={value.length} baseline={value}/></p>{isStrong(f.id) && <span className={f.review === 'pending' || f.draft !== null ? 'summary-pending' : 'summary-confirmed'}>{f.review === 'pending' || f.draft !== null ? '待单独确认' : '已确认'}</span>}</div>
+      })}</div>
+      {blocker && <p className="handoff-blocker"><CircleAlert size={15}/>未核实事项将随单保留：{blocker}</p>}
+      <AlertDialogFooter><AlertDialogCancel>返回核对</AlertDialogCancel><Button disabled={flowBusy || (!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit'))} onClick={() => beginHandoff(true)}>确认并发送</Button></AlertDialogFooter>
     </AlertDialogContent></AlertDialog>
   </div>
 }

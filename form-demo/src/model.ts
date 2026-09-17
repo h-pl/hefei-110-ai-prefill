@@ -141,10 +141,10 @@ export function reducer(state: Model, action: Action): Model {
   }
   const time = 'time' in action && action.time ? action.time : stamp()
   if (action.type === 'send') {
-    const blocker = sendBlocker(state)
+    const blocker = action.urgent ? null : sendBlocker(state)
     if (blocker) return { ...state, announcement: blocker }
-    const fields = state.fields.map(f => addHistory({ ...f, owned: true, review: f.origin === 'manual' ? 'modified' : 'confirmed' }, { time, actor: '接警员012', action: '随发送整体确认（演示）', after: f.value }))
-    return { ...state, fields, sent: { time, urgent: !!action.urgent, values: Object.fromEntries(fields.map(f => [f.id, f.value])) as Record<FieldId, string> }, announcement: '整体确认完成；演示未发送至调度系统' }
+    const fields = state.fields.map(f => addHistory({ ...f, owned: true, review: action.urgent ? f.review : f.origin === 'manual' ? 'modified' : 'confirmed' }, { time, actor: '接警员012', action: action.urgent ? '紧急先行移交，保留未核实事项' : '随发送整体确认', after: f.value }))
+    return { ...state, fields, sent: { time, urgent: !!action.urgent, values: Object.fromEntries(fields.map(f => [f.id, f.value])) as Record<FieldId, string> }, announcement: action.urgent ? '紧急移交已提交；未核实事项随单保留' : '整体确认完成；正在提交移交'  }
   }
   const field = state.fields.find(f => f.id === action.id)!
   let next = { ...field }, announcement = '', valueChanged = false
@@ -222,6 +222,6 @@ export function restoreModel(raw: string | null): Model {
 
     const fallbackSeconds = Math.max(0, ...[...conversation, ...streams.map(s => s.evidence)].map(e => { const [m, sec] = e.time.split(':').map(Number); return Number.isFinite(m + sec) ? m * 60 + sec : 0 }))
     const elapsedMs = Number.isFinite(data.state.elapsedMs) && data.state.elapsedMs >= 0 ? data.state.elapsedMs : fallbackSeconds * 1000
-    return { ...fresh, elapsedMs, fields, conversation, pendingFills, streams, fillOffset: Number.isInteger(data.state.fillOffset) ? data.state.fillOffset : -1, playbackCursor: Number.isInteger(data.state.playbackCursor) && data.state.playbackCursor >= 0 && data.state.playbackCursor <= 10 ? data.state.playbackCursor : null, lastIncoming: typeof data.state.lastIncoming?.quote === 'string' ? data.state.lastIncoming : null, newInfoIndex: Number.isFinite(data.state.newInfoIndex) ? data.state.newInfoIndex : 0, sent: data.version >= 2 && data.state.sent?.values && typeof data.state.sent.time === 'string' ? data.state.sent : null }
+    return { ...fresh, elapsedMs, fields, conversation, pendingFills, streams, fillOffset: Number.isInteger(data.state.fillOffset) ? data.state.fillOffset : -1, playbackCursor: Number.isInteger(data.state.playbackCursor) && data.state.playbackCursor >= 0 && data.state.playbackCursor <= 11 ? data.state.playbackCursor : null, lastIncoming: typeof data.state.lastIncoming?.quote === 'string' ? data.state.lastIncoming : null, newInfoIndex: Number.isFinite(data.state.newInfoIndex) ? data.state.newInfoIndex : 0, sent: data.version >= 2 && data.state.sent?.values && typeof data.state.sent.time === 'string' ? data.state.sent : null }
   } catch { return fresh }
 }

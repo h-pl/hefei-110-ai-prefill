@@ -232,3 +232,19 @@ button,input,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:
 .workbench .input-frame{--field-text-inset:46px;--field-text-line:22px}
 .workbench .long-input{--field-text-line:23px}
 .workbench .field-input[data-slot=input],.workbench .field-input[data-slot=textarea],.workbench .field-select[data-slot=select-trigger]{padding-left:var(--field-text-inset);line-height:var(--field-text-line);transition:none}
+
+/* Confirmation belongs to the form heading, without a second result panel. */
+.form-confirmed-status{display:inline-flex;align-items:center;align-self:center;gap:5px;flex-shrink:0;padding:3px 9px;margin-bottom:8px;border-radius:6px;background:#edf8f0;color:#18794e;font-size:12px;font-weight:500;line-height:20px;white-space:nowrap}
+
+.workflow-column{min-width:0;overflow:auto;padding-bottom:24px;scrollbar-width:thin}
+.workflow-panel{display:flex;flex-direction:column;gap:16px;padding:20px;background:#f7f7f6;border-radius:16px;font-size:14px;line-height:22px}
+.workflow-panel h2{font-size:18px;line-height:26px;margin:0}.workflow-panel p{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
+.workflow-success{color:#18794e}.workflow-danger{color:#b73535}.workflow-unresolved,.workflow-hint{color:#966018;font-size:12px;line-height:20px}.workflow-unresolved ul{margin:6px 0 0;padding-left:18px}
+.workflow-actions{display:flex;gap:8px}.workflow-actions>button{flex:1}
+.workflow-panel [data-slot=button]{min-height:36px;height:auto;white-space:normal;padding:8px 12px;font-size:12px}.workflow-panel textarea{min-height:110px;background:#fff;font-size:14px;line-height:22px}
+.workflow-draft-label{font-weight:500;margin-bottom:-10px}.workflow-difference{padding:14px;background:#fff;border:1px solid #e5e5e5;border-radius:8px;max-height:260px;overflow:auto}.workflow-difference p{margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.workflow-supplements{font-size:12px;color:#737373}.workflow-supplements p{margin-top:8px}.workflow-supplements summary{cursor:pointer}
+.workflow-dialog[data-slot=alert-dialog-content]{max-width:600px;width:calc(100vw - 48px);padding:24px;max-height:85vh;overflow:auto}.workflow-dialog [data-slot=alert-dialog-footer]{margin:8px -24px -24px;padding:16px 24px}.workflow-dialog button{height:38px;padding:0 16px}
+.snapshot-wide{grid-column:1/-1}.snapshot-value{display:flex;align-items:flex-start;gap:14px;min-height:46px;padding:10px 16px;border:1px solid #dddaf0;border-radius:8px;background:linear-gradient(110deg,#eaf1ff,#f0eafd,#e9f5f4);font-size:14px;line-height:23px}.snapshot-value p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.snapshot-value svg{flex-shrink:0;margin-top:3px;color:#18794e}.snapshot-confirmed{background:#edf8f0;border-color:#d2eadb}.snapshot-ai{color:#75639c;font-weight:600;flex-shrink:0}.snapshot-form .form-field:last-child .snapshot-value{min-height:88px}
+.simulation-settings{width:280px;display:flex;flex-direction:column;gap:12px;font-size:13px}.simulation-settings p{color:#737373;font-size:12px}.simulation-settings label{display:flex;flex-direction:column;gap:6px}.simulation-settings select{border:1px solid #e5e5e5;border-radius:6px;padding:7px;background:#fff}
+.header-tools button.demo-badge{height:28px;font-size:11px;padding:0 9px;display:inline-flex}

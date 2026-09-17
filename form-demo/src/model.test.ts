@@ -25,7 +25,7 @@ describe('地点和号码强确认，其余随发送确认', () => {
   it('地点修改带入描述且不编造具体道路', () => { const s = edit(createInitialModel(), 'location', '合肥安和广场西门，具体道路待核实'); expect(get(s, 'description').value).toContain('合肥安和广场西门，具体道路待核实') })
   it('刷新保持草稿及建议，损坏数据安全回退', () => { const s = reducer(reducer(ready(), { type: 'edit', id: 'people', value: '3人' }), incoming); expect(restoreModel(JSON.stringify({ version: 2, state: s })).fields).toEqual(s.fields); expect(restoreModel('broken').fields).toHaveLength(9) })
   it('旧六字段草稿迁移保留人工内容并改用整体确认规则', () => { const s = edit(createInitialModel(), 'people', '7人'); get(s).review = 'modified'; const old = { ...s, fields: s.fields.slice(3) }; const migrated = restoreModel(JSON.stringify({ version: 1, state: old })); expect(migrated.fields).toHaveLength(9); expect(get(migrated)).toMatchObject({ value: '7人', review: 'pending', owned: true }); expect(get(migrated, 'location').review).toBe('pending') })
-  it('紧急入口仍遵循本轮地点与号码强确认规则', () => { expect(reducer(createInitialModel(), { type: 'send', urgent: true }).sent).toBeNull(); expect(reducer(ready(), { type: 'send', urgent: true }).sent?.urgent).toBe(true) })
+  it('紧急先行移交保留未确认状态，不冒充完成强确认', () => { const s = reducer(createInitialModel(), { type: 'send', urgent: true }); expect(s.sent?.urgent).toBe(true); expect(get(s, 'location').review).toBe('pending'); expect(get(s, 'callback').review).toBe('pending'); expect(s.fields.every(f => f.owned)).toBe(true) })
 })
 describe('地点匹配演示', () => {
   it('关键词匹配候选，门位精确匹配优先、保留关联入口，不伪造未找到的地点', () => { expect(matchAddresses('安和')).toHaveLength(12); expect(matchAddresses('合肥安和广场西门，具体道路待核实')[0].name).toBe('安和广场西门'); expect(matchAddresses('安和广场北门')[0].name).toBe('安和广场北门'); expect(matchAddresses('未知商场')).toEqual([]); expect(matchAddresses('')).toEqual([]) })
