@@ -45,8 +45,8 @@ export function WorkflowPanel({ workflow: w, dispatch, fields, pending, storageE
         <Button variant={completionError && w.screen !== 'edit' ? 'default' : 'outline'} onClick={() => dispatch({ type: 'screen', screen: w.screen === 'edit' ? 'result' : 'edit' })}>{w.screen === 'edit' ? '返回已发快照' : '返回警单继续补充'}</Button>
         {pending > 0 && <p className="workflow-unresolved">{pending} 项新信息待核对；已发快照保持不变。</p>}
         {w.screen === 'edit' && <div className="workflow-difference"><strong>本次变更（{newDifferences.length}项）</strong>{newDifferences.length ? <><p>{newDifferences.map(f => `${f.label}：${baseline.find(old => old.id === f.id)?.value || '尚未获取'} → ${f.proposal?.value ?? f.value}`).join('\n')}</p><p className="muted">核对表单中的新建议后，从右上角发送补充。</p></> : <p className="muted">继续对话或修改表单后，这里会显示本次变化，右上角出现发送补充入口。</p>}</div>}
-        <Button variant={completionError ? 'outline' : 'default'} onClick={() => setDialog('record')}>保存记录并完成本轮整理</Button>
-        {completionError && <p className="workflow-hint">{completionError}</p>}
+        <Button variant={completionError ? 'outline' : 'default'} disabled={!!completionError} aria-describedby={completionError ? 'completion-blocker' : undefined} onClick={() => setDialog('record')}>保存记录并完成本轮整理</Button>
+        {completionError && <p id="completion-blocker" className="workflow-hint">{completionError}</p>}
       </>}
       {previousSupplements.length > 0 && <details className="workflow-supplements"><summary>本轮已接收补充（{previousSupplements.length}）</summary>{previousSupplements.map(r => <p key={r.id}>{r.receiptTime} · {r.content}</p>)}</details>}
     </section>
