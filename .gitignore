@@ -1,0 +1,14 @@
+.DS_Store
+node_modules/
+dist/
+.vercel/
+.env
+.env.*
+!.env.example
+*.local
+*.log
+__pycache__/
+*.py[cod]
+.playwright-mcp/
+test-results/
+playwright-report/
