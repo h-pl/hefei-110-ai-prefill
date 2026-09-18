@@ -48,7 +48,6 @@ export function WorkflowPanel({ workflow: w, dispatch, fields, pending, storageE
         <Button variant={completionError ? 'outline' : 'default'} disabled={!!completionError} aria-describedby={completionError ? 'completion-blocker' : undefined} onClick={() => setDialog('record')}>保存记录并完成本轮整理</Button>
         {completionError && <p id="completion-blocker" className="workflow-hint">{completionError}</p>}
       </>}
-      {previousSupplements.length > 0 && <details className="workflow-supplements"><summary>本轮已接收补充（{previousSupplements.length}）</summary>{previousSupplements.map(r => <p key={r.id}>{r.receiptTime} · {r.content}</p>)}</details>}
     </section>
     <AlertDialog open={dialog !== null} onOpenChange={open => !open && setDialog(null)}><AlertDialogContent className="workflow-dialog" data-motion-static><AlertDialogHeader><AlertDialogTitle>{dialog === 'record' ? '保存记录，完成本轮整理' : '核对重要补充'}</AlertDialogTitle><AlertDialogDescription>{dialog === 'record' ? '保存本轮警情、来源、人工确认和操作记录。完成整理不代表调度已签收、派警或处置完成。' : '补充关联当前警情，保留原移交快照。取消后仍保留本次草稿。'}</AlertDialogDescription></AlertDialogHeader>
       {dialog === 'supplement' ? <div className="workflow-difference"><strong>新增信息</strong><p>{w.draft}</p></div> : completionError && <p className="handoff-blocker" role="alert">{completionError}</p>}
