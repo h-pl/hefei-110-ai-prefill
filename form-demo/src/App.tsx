@@ -1,23 +1,26 @@
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, Play, Pause, History, RotateCcw, Sparkles, X, ArrowRight, ChevronDown, CircleAlert, UserRoundPen, UserRoundCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { AudioSourceCard, type AudioMode } from './AudioSourceCard'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
-import { isStrong, sendBlocker, submissionIssues, createIdleModel, reducer, restoreModel, type Action, type Field, type FieldId } from './model'
+import { isPlaybackComplete, isStrong, sendBlocker, submissionIssues, createIdleModel, reducer, restoreModel, type Action, type Field, type FieldId, type Model } from './model'
 
 import { textChange, previewChange } from './text-change'
 import { matchAddresses } from './address'
 import { usePageTextMotion } from './text-motion'
 import { playbackSteps, getFollowups } from './followups'
-import { emptyWorkflow, getRoot, getActive, isBusy, makeRequest, restoreWorkflow, workflowReducer, type Outcome } from './workflow'
+import { emptyWorkflow, getRoot, getActive, isBusy, makeRequest, restoreWorkflow, workflowReducer, type Outcome, type Workflow } from './workflow'
 import { WorkflowPanel, SnapshotFields } from './WorkflowPanel'
 import { mockWorkflowResult } from './mock-workflow-service'
 
 const STORAGE_KEY = 'moss-prefill-form:v3'
 const WORKFLOW_KEY = 'moss-prefill-workflow:v1'
+const readModeModel = (mode: AudioMode) => { try { const saved = localStorage.getItem(`${STORAGE_KEY}:${mode}`) ?? (mode === 'upload' ? localStorage.getItem(STORAGE_KEY) : null); return saved ? restoreModel(saved) : createIdleModel() } catch { return createIdleModel() } }
+const readModeWorkflow = (mode: AudioMode) => { try { return restoreWorkflow(localStorage.getItem(`${WORKFLOW_KEY}:${mode}`) ?? (mode === 'upload' ? localStorage.getItem(WORKFLOW_KEY) : null)) } catch { return emptyWorkflow() } }
 const formatCallTime = (milliseconds: number) => { const seconds = Math.floor(milliseconds / 1000); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` }
 
 function Status({ field }: { field: Field }) {
@@ -55,7 +58,7 @@ function Evidence({ field }: { field: Field }) {
   </Popover>
 }
 
-function FormField({ field, submitIssue, dispatch, setFocused, thinking, streamText }: { field: Field; streamText?: string; thinking?: boolean; submitIssue?: string; dispatch: React.Dispatch<Action>; setFocused: (id: FieldId | null) => void }) {
+function FormField({ field, submitIssue, dispatch, setFocused, thinking, streamText, extractionComplete }: { field: Field; extractionComplete: boolean; streamText?: string; thinking?: boolean; submitIssue?: string; dispatch: React.Dispatch<Action>; setFocused: (id: FieldId | null) => void }) {
   const [locationOpen, setLocationOpen] = useState(false)
   const [candidateIndex, setCandidateIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -114,12 +117,13 @@ function FormField({ field, submitIssue, dispatch, setFocused, thinking, streamT
     if (event.key === 'Enter' && (field.id !== 'description' || event.metaKey || event.ctrlKey)) { event.preventDefault(); (inputRef.current ?? textRef.current)?.blur() }
   }
   const controlProps = { id: field.id, value, 'aria-invalid': Boolean(field.error), 'aria-describedby': hint ? `${field.id}-hint` : undefined, onFocus: () => setFocused(field.id), onBlur: blur, onKeyDown, 'aria-busy': streamText !== undefined }
+  const placeholder = thinking ? '' : extractionComplete ? '未获取到' : field.id === 'description' ? '等待生成' : '等待识别'
   const tone = !value && !thinking ? 'empty' : changed ? 'modified' : field.review !== 'pending' ? 'confirmed' : field.origin === 'manual' ? 'modified' : 'ai'
   return <section className={`form-field ${thinking ? 'is-thinking' : ''} ${streamText !== undefined ? 'is-streaming' : ''} ${preview !== undefined ? 'has-stream-preview' : ''} tone-${tone} ${editing ? 'is-editing' : ''} ${strong ? 'strong-field' : ''} ${field.error ? 'has-error' : ''}`} data-field={field.id} aria-labelledby={`${field.id}-label`} onKeyDown={event => { if (event.key === 'Escape' && editing && !event.defaultPrevented) { event.preventDefault(); cancel() } }}>
     <div className="field-heading"><div className="label-group"><label id={`${field.id}-label`} htmlFor={field.id}>{field.label}</label><Evidence field={field}/></div>{hint && <span className={`field-hint ${field.error ? 'hint-error' : 'hint-warning'}`} id={`${field.id}-hint`} role="alert">{hint}</span>}</div>
     <div className={`input-frame ${field.id === 'description' ? 'long-input' : ''}`}>
       <Status field={streamText !== undefined ? { ...field, value: streamText || field.value } : field}/>{preview !== undefined && <div className="field-stream-copy" aria-hidden="true"><StreamedText quote={preview} offset={preview.length} baseline={field.value}/></div>}{thinking && !value && <span className="thinking-text" aria-hidden="true">正在提取{field.label}…</span>}
-      {field.id === 'ongoing' ? <Select value={value || undefined} onValueChange={v => dispatch({ type: 'edit', id: field.id, value: v })}><SelectTrigger ref={selectRef} id={field.id} className="field-select" aria-labelledby={`${field.id}-label`} aria-describedby={hint ? `${field.id}-hint` : undefined} aria-invalid={Boolean(field.error)} onFocus={() => setFocused(field.id)} onBlur={blur}><SelectValue placeholder={thinking ? '' : '等待识别'}/></SelectTrigger><SelectContent data-motion-static onCloseAutoFocus={save}><SelectItem value="是">是</SelectItem><SelectItem value="否">否</SelectItem><SelectItem value="不详">不详</SelectItem></SelectContent></Select> : field.id === 'description' ? <Textarea {...controlProps} ref={textRef} className="field-input field-textarea" onChange={e => dispatch({ type: 'edit', id: field.id, value: e.target.value })} placeholder={thinking ? '' : '等待生成'}/> : <Input {...controlProps} ref={inputRef} className="field-input" role={field.id === 'location' ? 'combobox' : undefined} aria-autocomplete={field.id === 'location' ? 'list' : undefined} aria-expanded={field.id === 'location' ? locationOpen : undefined} aria-controls={field.id === 'location' && locationOpen ? 'address-options' : undefined} aria-activedescendant={field.id === 'location' && locationOpen && candidateIndex >= 0 ? candidates[candidateIndex]?.id : undefined} onClick={() => { if (field.id === 'location') setLocationOpen(true) }} onFocus={() => { setFocused(field.id); if (field.id === 'location') setLocationOpen(true) }} onBlur={blur} onChange={e => { dispatch({ type: 'edit', id: field.id, value: e.target.value }); if (field.id === 'location') { setLocationOpen(true); setCandidateIndex(-1) } }} placeholder={thinking ? '' : '等待识别'} autoComplete="off"/>}
+      {field.id === 'ongoing' ? <Select value={value || undefined} onValueChange={v => dispatch({ type: 'edit', id: field.id, value: v })}><SelectTrigger ref={selectRef} id={field.id} className="field-select" aria-labelledby={`${field.id}-label`} aria-describedby={hint ? `${field.id}-hint` : undefined} aria-invalid={Boolean(field.error)} onFocus={() => setFocused(field.id)} onBlur={blur}><SelectValue placeholder={placeholder}/></SelectTrigger><SelectContent data-motion-static onCloseAutoFocus={save}><SelectItem value="是">是</SelectItem><SelectItem value="否">否</SelectItem><SelectItem value="不详">不详</SelectItem></SelectContent></Select> : field.id === 'description' ? <Textarea {...controlProps} ref={textRef} className="field-input field-textarea" onChange={e => dispatch({ type: 'edit', id: field.id, value: e.target.value })} placeholder={placeholder}/> : <Input {...controlProps} ref={inputRef} className="field-input" role={field.id === 'location' ? 'combobox' : undefined} aria-autocomplete={field.id === 'location' ? 'list' : undefined} aria-expanded={field.id === 'location' ? locationOpen : undefined} aria-controls={field.id === 'location' && locationOpen ? 'address-options' : undefined} aria-activedescendant={field.id === 'location' && locationOpen && candidateIndex >= 0 ? candidates[candidateIndex]?.id : undefined} onClick={() => { if (field.id === 'location') setLocationOpen(true) }} onFocus={() => { setFocused(field.id); if (field.id === 'location') setLocationOpen(true) }} onBlur={blur} onChange={e => { dispatch({ type: 'edit', id: field.id, value: e.target.value }); if (field.id === 'location') { setLocationOpen(true); setCandidateIndex(-1) } }} placeholder={placeholder} autoComplete="off"/>}
       {field.id === 'location' && locationOpen && <div className="address-panel" onMouseDown={e => e.preventDefault()}><div className="address-panel-heading"><strong>关联地点 · {candidates.length} 个候选</strong><span>模拟候选 · 未接入 API</span></div><div id="address-options" role="listbox" aria-label="地点匹配候选">{candidates.map((candidate, i) => <button type="button" role="option" aria-selected={i === candidateIndex} id={candidate.id} key={candidate.id} tabIndex={-1} onClick={() => chooseAddress(i)}><strong>{candidate.name}</strong><span>{candidate.area}</span><small>{candidate.value === value ? '当前' : '选择'}</small></button>)}</div>{!candidates.length && <p className="address-empty">未匹配到候选。请调整关键词，或保留口述地点，不补填未知信息。</p>}<div className="address-panel-note">选择即确认，并更新到事发地点。</div></div>}
       {strong && (field.review === 'pending' || changed) && (field.draft ?? field.value).trim() && <Button variant="ghost" size="sm" className="inline-confirm" data-motion-static disabled={streamText !== undefined} onClick={confirm} aria-label={confirmLabel}><Check size={15}/>确认</Button>}
 
@@ -237,8 +241,10 @@ function FollowupCard({ questions, started, playing }: { questions: ReturnType<t
 
 export default function App() {
   usePageTextMotion()
-  const [state, dispatch] = useReducer(reducer, undefined, () => { try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? restoreModel(saved) : createIdleModel() } catch { return createIdleModel() } })
-  const [workflow, flowDispatch] = useReducer(workflowReducer, undefined, () => { try { return restoreWorkflow(localStorage.getItem(WORKFLOW_KEY)) } catch { return emptyWorkflow() } })
+  const [audioMode, setAudioMode] = useState<AudioMode>('upload')
+  const sessions = useRef<Partial<Record<AudioMode, { state: Model; workflow: Workflow }>>>({})
+  const [state, dispatch] = useReducer(reducer, undefined, () => readModeModel('upload'))
+  const [workflow, flowDispatch] = useReducer(workflowReducer, undefined, () => readModeWorkflow('upload'))
   const [flowStorageError, setFlowStorageError] = useState(false)
   const [nextOutcome, setNextOutcome] = useState<Outcome>('received')
   const [queryOutcome, setQueryOutcome] = useState<Outcome>('received')
@@ -257,7 +263,7 @@ export default function App() {
   const supplementNeedsConfirmation = supplementChanges.some(f => isStrong(f.id) && f.review === 'pending')
   const canSupplement = rootRequest?.status === 'received' && activeRequest?.status === 'received' && !flowComplete && workflow.screen === 'edit'
   useEffect(() => { if (rootRequest?.status === 'received') flowDispatch({ type: 'draft', value: supplementText }) }, [rootRequest?.id, supplementText])
-  useEffect(() => { try { localStorage.setItem(WORKFLOW_KEY, JSON.stringify(workflow)); setFlowStorageError(false) } catch { setFlowStorageError(true) } }, [workflow])
+  useEffect(() => { try { localStorage.setItem(`${WORKFLOW_KEY}:${audioMode}`, JSON.stringify(workflow)); setFlowStorageError(false) } catch { setFlowStorageError(true) } }, [workflow, audioMode])
   useEffect(() => {
     if (!activeRequest || !isBusy(activeRequest)) return
     const planned = activeRequest.status === 'querying' ? outcomeRef.current.queryOutcome : outcomeRef.current.nextOutcome
@@ -278,6 +284,9 @@ export default function App() {
   const beginRecord = () => flowDispatch({ type: 'start', request: makeRequest(state, 'record', workflow.requests.filter(r => r.kind === 'record').length + 1, rootRequest!.id, '保存本轮警情、来源、核对与操作记录', rootRequest!.urgent) })
   const [focused, setFocused] = useState<FieldId | null>(null)
   const [playing, setPlaying] = useState(false)
+  const transcriptTitle = audioMode === 'upload' ? '音频转写' : '实时转写'
+  const [audioBusy, setAudioBusy] = useState(false)
+  const [audioResetVersion, setAudioResetVersion] = useState(0)
   const focusedRef = useRef(focused)
   focusedRef.current = focused
   const transcriptRef = useRef<HTMLDivElement>(null)
@@ -286,14 +295,14 @@ export default function App() {
   const [submitAttempted, setSubmitAttempted] = useState(false)
   const [resetVersion, setResetVersion] = useState(0)
   const [handoff, setHandoff] = useState<'normal' | 'urgent' | null>(null)
-  const persist = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 3, state })); setStorageError(false); return true } catch { setStorageError(true); return false } }
-  useEffect(() => { persist() }, [state])
+  const persist = () => { try { localStorage.setItem(`${STORAGE_KEY}:${audioMode}`, JSON.stringify({ version: 3, state })); setStorageError(false); return true } catch { setStorageError(true); return false } }
+  useEffect(() => { persist() }, [state, audioMode])
   const field = (id: FieldId) => (snapshot?.fields ?? state.fields).find(f => f.id === id)!
   const reviewed = (snapshot?.fields ?? state.fields).filter(f => isStrong(f.id) && f.review !== 'pending' && f.draft === null).length
   const started = state.playbackCursor !== null
   const conversation = state.conversation
   const transcriptionDone = started && state.playbackCursor! >= playbackSteps.length && state.streams.length === 0
-  const playbackDone = transcriptionDone && state.pendingFills.length === 0
+  const playbackDone = isPlaybackComplete(state, playbackSteps.length)
   const callTime = formatCallTime(state.elapsedMs)
   const elapsedRef = useRef(state.elapsedMs)
   elapsedRef.current = state.elapsedMs
@@ -343,7 +352,7 @@ export default function App() {
       previous = now
     }, 100)
     return () => window.clearInterval(timer)
-  }, [started, playing, transcriptionDone])
+  }, [started, playing, transcriptionDone, resetVersion])
   useEffect(() => {
     if (!playing || !activeFill) return
     const timer = window.setTimeout(() => { dispatch({ type: 'fill-tick', focused: focusedRef.current }) }, state.fillOffset < 0 ? 400 : 65)
@@ -354,37 +363,79 @@ export default function App() {
     // Speech starts independently of extraction; each role keeps its own stream.
     const timer = window.setTimeout(() => dispatch({ type: 'stream-start', ...nextStep, evidence: { ...nextStep.evidence, time: formatCallTime(elapsedRef.current) } }), nextStepIndex === 0 ? 200 : 650)
     return () => window.clearTimeout(timer)
-  }, [playing, started, nextStep, nextSpeakerBusy, nextStepIndex])
+  }, [playing, started, nextStep, nextSpeakerBusy, nextStepIndex, resetVersion])
   useEffect(() => { if (playing && playbackDone) setPlaying(false) }, [playing, playbackDone])
   useEffect(() => {
     if (state.playbackCursor !== null && transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
   }, [state.playbackCursor, operatorStream?.offset, callerStream?.offset])
-  const togglePlayback = () => {
+  const sampleUnavailable = audioBusy || (!!rootRequest && playbackDone && (flowComplete || conversation.some(e => e.quote === '旁边还有一个人脚踝受伤，走不了路。')))
+  const startExample = () => {
+    if (sampleUnavailable) return
     if (rootRequest && playbackDone && !flowComplete) {
       const quote = '旁边还有一个人脚踝受伤，走不了路。'
       dispatch({ type: 'stream-start', evidence: { speaker: '报警人', time: formatCallTime(state.elapsedMs), quote }, updates: { injury: '一人手臂流血，意识清醒；另有一人脚踝受伤，无法行走' } })
       setPlaying(true)
       return
     }
-    if (playing) { setPlaying(false); return }
     if (state.playbackCursor === null || playbackDone) {
       dispatch({ type: 'playback-start' }); flowDispatch({ type: 'reset' }); setResetVersion(v => v + 1); setSubmitAttempted(false); setNotice(''); setFocused(null); setHandoff(null)
     }
     setPlaying(true)
   }
+  const resetProcessing = (start: boolean) => {
+    dispatch({ type: start ? 'playback-start' : 'playback-idle' })
+    flowDispatch({ type: 'reset' })
+    setResetVersion(v => v + 1)
+    setSubmitAttempted(false)
+    setNotice('')
+    setFocused(null)
+    setHandoff(null)
+    setWorkflowDialog(null)
+    setPlaying(start)
+  }
+  const changeAudioMode = (mode: AudioMode) => {
+    if (mode === audioMode || (audioMode === 'upload' && started && !playbackDone)) return
+    sessions.current[audioMode] = { state, workflow }
+    const cached = sessions.current[mode] ?? { state: readModeModel(mode), workflow: readModeWorkflow(mode) }
+    dispatch({ type: 'restore-session', state: cached.state })
+    flowDispatch({ type: 'restore-session', state: cached.workflow })
+    setPlaying(false)
+    setResetVersion(v => v + 1)
+    setSubmitAttempted(false)
+    setNotice('')
+    setFocused(null)
+    setHandoff(null)
+    setWorkflowDialog(null)
+    setAudioMode(mode)
+  }
+  const resetAllModes = () => {
+    sessions.current = { upload: { state: createIdleModel(), workflow: emptyWorkflow() }, microphone: { state: createIdleModel(), workflow: emptyWorkflow() } }
+    resetProcessing(false)
+    setAudioMode('upload')
+    setAudioResetVersion(v => v + 1)
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(WORKFLOW_KEY)
+      for (const mode of ['upload', 'microphone'] as const) {
+        localStorage.setItem(`${STORAGE_KEY}:${mode}`, JSON.stringify({ version: 3, state: sessions.current[mode]!.state }))
+        localStorage.setItem(`${WORKFLOW_KEY}:${mode}`, JSON.stringify(emptyWorkflow()))
+      }
+    } catch { setStorageError(true); setFlowStorageError(true) }
+  }
+  const togglePlayback = () => { if (playing) setPlaying(false); else startExample() }
   return <div className="workbench">
-    <header className="workbench-nav"><div className="brand">110 / <span>接警助手</span></div><div className="header-call-info" data-motion-static><strong className="header-call-status" tabIndex={0} title="接警时间 14:32:08" aria-label={`${state.playbackCursor === null ? '等待接听' : '正在通话'}，通话时长${callTime}，接警时间14点32分08秒`}><span className="call-status-dot"/><span>{state.playbackCursor === null ? '等待接听' : '正在通话'}</span> <span>{callTime}</span></strong><span className="header-case-id">JQ-20260916-0028</span><span className="header-caller">来电 <b>138****6721</b></span></div><div className="header-tools"><Popover><PopoverTrigger asChild><Button variant="ghost" className="demo-badge" aria-label="交互演示设置">交互演示</Button></PopoverTrigger><PopoverContent className="simulation-settings" data-motion-static><strong>模拟服务回执</strong><p>仅在当前浏览器模拟，未连接调度系统。</p><label>下次提交结果<select aria-label="下次提交结果" value={nextOutcome} onChange={e => setNextOutcome(e.target.value as Outcome)}><option value="received">成功接收</option><option value="failed">明确失败</option><option value="unknown">结果未知</option></select></label><label>下次查询结果<select aria-label="下次查询结果" value={queryOutcome} onChange={e => setQueryOutcome(e.target.value as Outcome)}><option value="received">已成功接收</option><option value="failed">明确未接收</option><option value="unknown">仍然未知</option></select></label></PopoverContent></Popover><Button variant="ghost" size="sm" className="reset-demo" aria-label="重置演示数据" title="重置演示数据" onClick={() => { setPlaying(false); dispatch({ type: 'playback-idle' }); flowDispatch({ type: 'reset' }); setResetVersion(v => v + 1); setSubmitAttempted(false); setNotice(''); setFocused(null); setHandoff(null) }}><RotateCcw size={14}/><span className="reset-label">重置演示数据</span></Button><span className="nav-operator" data-motion-static>接警员 012<span className="operator-separator">·</span><span className="operator-online">在线</span></span><div className="header-actions" data-motion-static role="group" aria-label="警单操作"><Button variant="outline" className="urgent-action" disabled={!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit')} onClick={() => { setNotice(''); setHandoff('urgent') }}>紧急先行移交</Button>{canSupplement ? (supplementChanges.length > 0 && <Button className="handoff-action" title={supplementNeedsConfirmation ? '变更后的地点或回拨号码需先确认' : undefined} disabled={supplementNeedsConfirmation || pendingUpdates > 0 || state.fields.some(f => f.draft !== null || f.error)} onClick={() => { flowDispatch({ type: 'draft', value: supplementText }); setWorkflowDialog('supplement') }}>发送补充（{supplementChanges.length}项）</Button>) : <Button className="handoff-action" disabled={flowBusy || flowComplete || (!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit'))} onClick={submitDirectly}><span>{flowComplete ? '已完成整理' : flowBusy ? '处理中' : rootRequest && workflow.screen !== 'edit' ? '已提交' : '移交调度'}</span></Button>}</div></div></header>
+    <header className="workbench-nav"><div className="brand">110 / <span>接警助手</span></div><div className="header-call-info" data-motion-static><strong className="header-call-status" tabIndex={0} title="接警时间 14:32:08" aria-label={`${state.playbackCursor === null ? '等待接听' : '正在通话'}，通话时长${callTime}，接警时间14点32分08秒`}><span className="call-status-dot"/><span>{state.playbackCursor === null ? '等待接听' : '正在通话'}</span> <span>{callTime}</span></strong><span className="header-case-id">JQ-20260916-0028</span><span className="header-caller">来电 <b>138****6721</b></span></div><div className="header-tools"><Popover><PopoverTrigger asChild><Button variant="ghost" className="demo-badge" aria-label="交互演示设置">交互演示</Button></PopoverTrigger><PopoverContent className="simulation-settings" data-motion-static><strong>模拟服务回执</strong><p>仅在当前浏览器模拟，未连接调度系统。</p><label>下次提交结果<select aria-label="下次提交结果" value={nextOutcome} onChange={e => setNextOutcome(e.target.value as Outcome)}><option value="received">成功接收</option><option value="failed">明确失败</option><option value="unknown">结果未知</option></select></label><label>下次查询结果<select aria-label="下次查询结果" value={queryOutcome} onChange={e => setQueryOutcome(e.target.value as Outcome)}><option value="received">已成功接收</option><option value="failed">明确未接收</option><option value="unknown">仍然未知</option></select></label></PopoverContent></Popover><Button variant="ghost" size="sm" className="reset-demo" aria-label="重置演示数据" title="重置演示数据" onClick={resetAllModes}><RotateCcw size={14}/><span className="reset-label">重置演示数据</span></Button><span className="nav-operator" data-motion-static>接警员 012<span className="operator-separator">·</span><span className="operator-online">在线</span></span><div className="header-actions" data-motion-static role="group" aria-label="警单操作"><Button variant="outline" className="urgent-action" disabled={!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit')} onClick={() => { setNotice(''); setHandoff('urgent') }}>紧急先行移交</Button>{canSupplement ? (supplementChanges.length > 0 && <Button className="handoff-action" title={supplementNeedsConfirmation ? '变更后的地点或回拨号码需先确认' : undefined} disabled={supplementNeedsConfirmation || pendingUpdates > 0 || state.fields.some(f => f.draft !== null || f.error)} onClick={() => { flowDispatch({ type: 'draft', value: supplementText }); setWorkflowDialog('supplement') }}>发送补充（{supplementChanges.length}项）</Button>) : <Button className="handoff-action" disabled={flowBusy || flowComplete || (!!rootRequest && !(rootRequest.status === 'failed' && workflow.screen === 'edit'))} onClick={submitDirectly}><span>{flowComplete ? '已完成整理' : flowBusy ? '处理中' : rootRequest && workflow.screen !== 'edit' ? '已提交' : '移交调度'}</span></Button>}</div></div></header>
     <main className="workspace-grid">
-      <aside className="transcript-column" aria-label="实时转写"><div className="transcript-heading"><h2>实时转写</h2><Button variant="ghost" size="icon" className="playback-button" disabled={!!rootRequest && playbackDone && (flowComplete || conversation.some(e => e.quote === '旁边还有一个人脚踝受伤，走不了路。'))} onClick={togglePlayback} aria-label={playing ? '暂停模拟对话' : playbackDone ? rootRequest ? '模拟补充对话' : '重新播放模拟对话' : state.playbackCursor !== null ? '继续模拟对话' : '播放模拟对话'} title={playing ? '暂停' : playbackDone ? rootRequest ? '模拟补充对话' : '重新播放' : state.playbackCursor !== null ? '继续播放' : '从头播放模拟对话'}>{playing ? <Pause size={16}/> : playbackDone ? <RotateCcw size={16}/> : <Play size={16}/>}</Button></div>{state.playbackCursor !== null && <p className="recording"><span className="recording-dot"/><span className="recording-copy">录音中 · 转写持续更新</span></p>}<div className="transcript-messages" ref={transcriptRef} tabIndex={0} role="region" aria-label="对话记录">{transcriptRows.length === 0 && <p className="transcript-empty">{state.playbackCursor === null ? '点击播放，开始模拟对话' : '正在接通…'}</p>}{transcriptRows.map(({ evidence: { speaker, time, quote }, offset }) => <article key={`${speaker}-${time}`} className={`message ${offset !== null ? 'streaming-message' : ''} ${speaker === '报警人' ? 'caller' : 'operator-message'}`} aria-label={offset !== null ? `${speaker}正在转写` : undefined}><header><span className="speaker-label">{speaker}</span><span>·</span><time>{time}</time>{offset !== null && <span className="speaking-indicator">{playing ? '正在说话' : '已暂停'}</span>}</header><p><StreamedText quote={quote} offset={offset}/>{offset !== null && <span className={`transcript-caret ${playing ? '' : 'paused'}`} aria-hidden="true"/>}</p></article>)}</div>
+      <aside className="transcript-column" aria-label={transcriptTitle}><AudioSourceCard key={audioResetVersion} mode={audioMode} onModeChange={changeAudioMode} recognizing={audioMode === 'upload' && started && !playbackDone} onSampleSelected={() => resetProcessing(true)} onUseAudio={() => setPlaying(false)} onBusyChange={setAudioBusy}/><div className="transcript-heading"><h2>{transcriptTitle}</h2>{audioMode === 'microphone' && <Button variant="ghost" size="icon" className="playback-button" disabled={sampleUnavailable} onClick={togglePlayback} aria-label={playing ? '暂停模拟对话' : playbackDone ? rootRequest ? '模拟补充对话' : '重新播放模拟对话' : state.playbackCursor !== null ? '继续模拟对话' : '播放模拟对话'} title={playing ? '暂停' : playbackDone ? rootRequest ? '模拟补充对话' : '重新播放' : state.playbackCursor !== null ? '继续播放' : '从头播放模拟对话'}>{playing ? <Pause size={16}/> : playbackDone ? <RotateCcw size={16}/> : <Play size={16}/>}</Button>}</div>{state.playbackCursor !== null && <p className="recording"><span className="recording-dot"/><span className="recording-copy">示例对话 · {playing ? '转写持续更新' : playbackDone ? '播放完成' : '已暂停'}</span></p>}<div className="transcript-messages" ref={transcriptRef} tabIndex={0} role="region" aria-label="对话记录">{transcriptRows.length === 0 && <p className="transcript-empty">{state.playbackCursor === null ? audioMode === 'upload' ? '上传示例音频，开始模拟对话' : '点击播放，开始模拟对话' : '正在接通…'}</p>}{transcriptRows.map(({ evidence: { speaker, time, quote }, offset }) => <article key={`${speaker}-${time}`} className={`message ${offset !== null ? 'streaming-message' : ''} ${speaker === '报警人' ? 'caller' : 'operator-message'}`} aria-label={offset !== null ? `${speaker}正在转写` : undefined}><header><span className="speaker-label">{speaker}</span><span>·</span><time>{time}</time>{offset !== null && <span className="speaking-indicator">{playing ? '正在说话' : '已暂停'}</span>}</header><p><StreamedText quote={quote} offset={offset}/>{offset !== null && <span className={`transcript-caret ${playing ? '' : 'paused'}`} aria-hidden="true"/>}</p></article>)}</div>
 
       </aside>
       <section className="form-column" aria-labelledby="form-title"><div className="form-title-row"><div><div className="form-heading-main"><h1 id="form-title">预填警单</h1>{currentSent && <span className="form-confirmed-status" role="status" data-motion-static title={`本次警单已整体确认 · ${snapshot?.time ?? state.sent?.time ?? ''} · 未发送至调度系统`} aria-label={`本次警单已整体确认，${snapshot?.time ?? state.sent?.time ?? ''}，未发送至调度系统`}><UserRoundCheck size={15} aria-hidden="true"/>已确认</span>}{(notice || storageError || flowStorageError) && <span role="status" className={`form-save-feedback ${storageError || flowStorageError ? 'storage-error' : ''}`}>{storageError || flowStorageError ? '暂存失败，请保持页面打开' : notice}</span>}</div><p>{snapshot ? '本次移交内容保留；新增信息作为关联补充。' : '人工处理后，AI 不会覆盖。'}{pendingUpdates > 0 && <span className="pending-update-note">{pendingUpdates} 项新信息待处理</span>}</p></div><div className="key-progress"><UserRoundCheck size={15}/><span>关键核对 <b>{reviewed}</b> / 2</span></div></div>
         <div className="risk-banner" data-motion-static tabIndex={0} role="region" aria-label="当前风险提示"><UpdatingText text={field('ongoing').value === '是' ? '现场冲突仍在发生' : field('ongoing').value === '否' ? '当前记录：事件已停止' : field('reason').value ? '事件是否持续待核实' : started ? '正在分析对话信息' : '等待识别'} idle={!field('reason').value && !field('ongoing').value} paused={!playing} thinking={(!field('reason').value && !field('ongoing').value && started) || (playing && state.fillOffset < 0 && state.pendingFills[0]?.id === 'ongoing')}/>{field('injury').value && <span className="risk-divider">·</span>}<UpdatingText text={field('injury').value} thinking={playing && state.fillOffset < 0 && state.pendingFills[0]?.id === 'injury'}/></div>
         {snapshot ? <SnapshotFields request={snapshot} renderEvidence={f => <Evidence field={f}/>}/> : <form onSubmit={e => e.preventDefault()} className="prefill-form" aria-label="预填警单">
           <div className="field-group-heading"><span>基础信息</span><span>地点、号码需单独确认</span></div>
-          {state.fields.slice(0, 3).map(f => <FormField key={`${resetVersion}-${f.id}`} field={f} streamText={state.pendingFills[0]?.id === f.id && state.fillOffset >= 0 && f.origin === 'ai' && !f.owned && f.review === 'pending' && focused !== f.id ? previewChange(f.value, state.pendingFills[0].value, state.fillOffset) : undefined} thinking={playing && !f.value && f.draft === null && focused !== f.id} submitIssue={issues[f.id]} dispatch={action => { setNotice(''); dispatch(action) }} setFocused={setFocused}/>)}
+          {state.fields.slice(0, 3).map(f => <FormField key={`${resetVersion}-${f.id}`} field={f} streamText={state.pendingFills[0]?.id === f.id && state.fillOffset >= 0 && f.origin === 'ai' && !f.owned && f.review === 'pending' && focused !== f.id ? previewChange(f.value, state.pendingFills[0].value, state.fillOffset) : undefined} extractionComplete={playbackDone} thinking={playing && !playbackDone && !f.value && f.draft === null && focused !== f.id} submitIssue={issues[f.id]} dispatch={action => { setNotice(''); dispatch(action) }} setFocused={setFocused}/>)}
           <div className="field-group-heading core-group"><span>核心预填</span><span>随发送整体确认</span></div>
-          {state.fields.slice(3).map(f => <FormField key={`${resetVersion}-${f.id}`} field={f} streamText={state.pendingFills[0]?.id === f.id && state.fillOffset >= 0 && f.origin === 'ai' && !f.owned && f.review === 'pending' && focused !== f.id ? previewChange(f.value, state.pendingFills[0].value, state.fillOffset) : undefined} thinking={playing && !f.value && f.draft === null && focused !== f.id} submitIssue={issues[f.id]} dispatch={action => { setNotice(''); dispatch(action) }} setFocused={setFocused}/>)}
+          {state.fields.slice(3).map(f => <FormField key={`${resetVersion}-${f.id}`} field={f} streamText={state.pendingFills[0]?.id === f.id && state.fillOffset >= 0 && f.origin === 'ai' && !f.owned && f.review === 'pending' && focused !== f.id ? previewChange(f.value, state.pendingFills[0].value, state.fillOffset) : undefined} extractionComplete={playbackDone} thinking={playing && !playbackDone && !f.value && f.draft === null && focused !== f.id} submitIssue={issues[f.id]} dispatch={action => { setNotice(''); dispatch(action) }} setFocused={setFocused}/>)}
         </form>}
       </section>
       {rootRequest ? <WorkflowPanel workflow={workflow} dispatch={flowDispatch} fields={state.fields} pending={pendingUpdates} storageError={storageError || flowStorageError} startSupplement={beginSupplement} startRecord={beginRecord} dialog={workflowDialog} setDialog={setWorkflowDialog}/> : <aside className="assistance-column" aria-label="接警辅助"><h2>接警辅助</h2><FollowupCard questions={followups} started={started} playing={playing}/>

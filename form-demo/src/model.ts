@@ -14,7 +14,10 @@ export type Field = {
 export type Snapshot = { time: string; urgent: boolean; values: Record<FieldId, string> }
 export type Stream = { evidence: Evidence; updates: Partial<Record<FieldId, string>>; offset: number }
 export type Model = { elapsedMs: number; fields: Field[]; announcement: string; newInfoIndex: number; lastIncoming: Evidence | null; conversation: Evidence[]; playbackCursor: number | null; streams: Stream[]; fillOffset: number; pendingFills: { id: FieldId; value: string; evidence: Evidence }[]; sent: Snapshot | null }
+// An ended transcript can still have queued field extraction to finish.
+export const isPlaybackComplete = (state: Model, stepCount: number) => state.playbackCursor !== null && state.playbackCursor >= stepCount && state.streams.length === 0 && state.pendingFills.length === 0
 export type Action =
+  | { type: 'restore-session'; state: Model }
   | { type: 'edit'; id: FieldId; value: string }
   | { type: 'select-location'; id: 'location'; value: string; time?: string }
   | { type: 'save' | 'confirm' | 'cancel' | 'adopt' | 'keep' | 'defer' | 'expand'; id: FieldId; time?: string }
@@ -77,6 +80,7 @@ export function sendBlocker(state: Model): string | null {
 }
 
 export function reducer(state: Model, action: Action): Model {
+  if (action.type === 'restore-session') return action.state
   if (action.type === 'reset') return createInitialModel()
   if (action.type === 'playback-idle') return createIdleModel()
   if (action.type === 'clock-tick') {

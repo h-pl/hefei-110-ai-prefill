@@ -1,7 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { createIdleModel, reducer, restoreModel } from './model'
+import { createIdleModel, isPlaybackComplete, reducer, restoreModel } from './model'
 import { playbackSteps } from './followups'
 const field = (s: ReturnType<typeof createIdleModel>, id: string) => s.fields.find(f => f.id === id)!
+describe('提取结束状态', () => {
+  it('原话和提取队列全部完成后才结束，未提到的字段保留空值供人工填写', () => {
+    let s = reducer(createIdleModel(), { type: 'playback-start' })
+    expect(isPlaybackComplete(s, 1)).toBe(false)
+    s = reducer(s, { type: 'stream-start', evidence: { speaker: '报警人', time: '00:01', quote: '有人打架。' }, updates: { reason: '有人打架' } })
+    expect(isPlaybackComplete(s, 1)).toBe(false)
+    while (s.streams.length) s = reducer(s, { type: 'stream-tick' })
+    expect(isPlaybackComplete(s, 1)).toBe(false)
+    while (s.pendingFills.length) s = reducer(s, { type: 'fill-tick' })
+    expect(isPlaybackComplete(s, 1)).toBe(true)
+    expect(field(s, 'injury').value).toBe('')
+    expect(field(s, 'injury').review).toBe('pending')
+    expect(field(s, 'reason').value).toBe('有人打架')
+    expect(isPlaybackComplete(restoreModel(JSON.stringify({ version: 3, state: s })), 1)).toBe(true)
+    s = reducer(s, { type: 'edit', id: 'injury', value: '手臂擦伤' })
+    s = reducer(s, { type: 'save', id: 'injury' })
+    expect(field(s, 'injury').value).toBe('手臂擦伤')
+    expect(isPlaybackComplete(reducer(s, { type: 'playback-start' }), 1)).toBe(false)
+    expect(isPlaybackComplete(reducer(s, { type: 'playback-idle' }), 1)).toBe(false)
+  })
+})
 describe('逐句对话和逐字段预填', () => {
   it('初始空白，先收到原话，再逐项填入，不提前写入后续信息', () => {
     let s = createIdleModel()

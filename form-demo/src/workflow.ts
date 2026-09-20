@@ -34,6 +34,7 @@ export function makeRequest(model: Model, kind: RequestKind, version: number, pa
   return { id: crypto.randomUUID(), caseId: 'JQ-20260916-0028', parentId, kind, version, status: 'sending', attempt: 1, time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), urgent, fields, content, unresolved, conversation: structuredClone(model.conversation) }
 }
 export type WorkflowAction =
+  | { type: 'restore-session'; state: Workflow }
   | { type: 'start'; request: WorkflowRequest }
   | { type: 'result'; id: string; attempt: number; outcome: Outcome; time: string }
   | { type: 'retry' | 'query' | 'revise'; id: string }
@@ -41,6 +42,7 @@ export type WorkflowAction =
   | { type: 'screen'; screen: Workflow['screen'] }
   | { type: 'reset' }
 export function workflowReducer(w: Workflow, a: WorkflowAction): Workflow {
+  if (a.type === 'restore-session') return a.state
   if (a.type === 'reset') return emptyWorkflow()
   if (a.type === 'screen') return isBusy(getActive(w)) ? w : { ...w, screen: a.screen }
   if (a.type === 'draft') return { ...w, draft: a.value, error: '' }
